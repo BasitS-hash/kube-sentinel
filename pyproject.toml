@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kube-sentinel"
+version = "0.1.0"
+description = "Kubernetes security posture scanner — audits manifests and live clusters against CIS, Pod Security Standards, and the NSA/CISA Hardening Guide."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "kube-sentinel contributors" }]
+keywords = [
+    "kubernetes",
+    "security",
+    "cis-benchmark",
+    "pod-security-standards",
+    "sarif",
+    "devsecops",
+    "cloud-native",
+    "misconfiguration",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+cluster = ["kubernetes>=29.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+    "types-PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/BasitS-hash/kube-sentinel"
+Repository = "https://github.com/BasitS-hash/kube-sentinel"
+Issues = "https://github.com/BasitS-hash/kube-sentinel/issues"
+
+[project.scripts]
+kube-sentinel = "kube_sentinel.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kube_sentinel"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "C4", "SIM", "RUF"]
+ignore = [
+    "B008",   # typer uses function calls in argument defaults
+    "UP042",  # `str, Enum` mix is intentional for stable JSON serialization
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+files = ["src/kube_sentinel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["kube_sentinel"]
+omit = ["*/cluster.py"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "examples"]
