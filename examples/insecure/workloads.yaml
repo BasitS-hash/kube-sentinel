@@ -1,0 +1,70 @@
+# Deliberately INSECURE manifests for demonstrating kube-sentinel findings.
+# DO NOT deploy these to a real cluster.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: web
+          image: nginx:latest
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            runAsUser: 0
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - NET_ADMIN
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-pod
+  namespace: demo
+spec:
+  hostIPC: true
+  containers:
+    - name: shell
+      image: busybox
+      command: ["sleep", "infinity"]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+  namespace: demo
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: backup
+              image: my-registry.example.com/backup
+              securityContext:
+                seccompProfile:
+                  type: Unconfined
