@@ -1,0 +1,47 @@
+name: kube-sentinel self-scan
+
+# Dogfooding: kube-sentinel scans its own insecure example manifests and
+# uploads the results to the GitHub Security tab as SARIF. This demonstrates
+# the exact CI integration users would adopt for their own manifests.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan example manifests (SARIF)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install kube-sentinel
+        run: pip install -e .
+
+      - name: Scan insecure examples and emit SARIF
+        # Do not fail the job on findings here; we only want to publish them.
+        run: |
+          kube-sentinel scan examples/insecure \
+            --sarif -o kube-sentinel.sarif --fail-on CRITICAL || true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: kube-sentinel.sarif
+          category: kube-sentinel
+
+      - name: Gate on hardened examples (must be clean)
+        run: kube-sentinel scan examples/hardened --fail-on HIGH
