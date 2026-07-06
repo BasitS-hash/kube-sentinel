@@ -38,7 +38,7 @@ jobs:
             --sarif -o kube-sentinel.sarif --fail-on CRITICAL || true
 
       - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: kube-sentinel.sarif
           category: kube-sentinel
