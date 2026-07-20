@@ -48,17 +48,26 @@ def get_pod_spec(obj: dict[str, Any]) -> dict[str, Any] | None:
     return pod_spec if isinstance(pod_spec, dict) else None
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Return ``value`` if it is a list, else an empty list.
+
+    Manifests routinely set a list field to null (``containers:`` with no
+    value parses to ``None``), so callers must not assume ``dict.get`` yields
+    an iterable — iterating ``None`` would crash the whole scan.
+    """
+    return value if isinstance(value, list) else []
+
+
 def get_containers(pod_spec: dict[str, Any]) -> list[dict[str, Any]]:
     """Return regular containers (excludes init/ephemeral)."""
-    containers = pod_spec.get("containers", [])
-    return [c for c in containers if isinstance(c, dict)]
+    return [c for c in _as_list(pod_spec.get("containers")) if isinstance(c, dict)]
 
 
 def get_all_containers(pod_spec: dict[str, Any]) -> list[dict[str, Any]]:
     """Return all containers including init and ephemeral containers."""
     out: list[dict[str, Any]] = []
     for key in ("containers", "initContainers", "ephemeralContainers"):
-        for c in pod_spec.get(key, []):
+        for c in _as_list(pod_spec.get(key)):
             if isinstance(c, dict):
                 out.append(c)
     return out

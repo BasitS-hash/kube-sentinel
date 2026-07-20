@@ -129,7 +129,10 @@ def _check_host_namespaces(resource: Resource) -> Iterator[str]:
 
 def _check_host_path(resource: Resource) -> Iterator[str]:
     spec, _ = _pod_and_containers(resource)
-    for vol in spec.get("volumes", []):
+    volumes = spec.get("volumes")
+    if not isinstance(volumes, list):
+        return
+    for vol in volumes:
         if isinstance(vol, dict) and "hostPath" in vol:
             host_path = vol.get("hostPath", {})
             path = host_path.get("path", "?") if isinstance(host_path, dict) else "?"

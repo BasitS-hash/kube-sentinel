@@ -225,7 +225,7 @@ bandit -r src                 # SAST
 pip-audit                     # dependency CVEs
 ```
 
-The test suite asserts that the insecure examples trip the full range of rules and that the hardened examples produce **zero** findings.
+The test suite asserts that the insecure examples trip the full range of rules, that the hardened examples produce **zero** findings, that malformed-but-valid manifests (e.g. a null `containers:` field) are handled without crashing, and that emitted SARIF validates against the official [SARIF 2.1.0 JSON schema](https://github.com/oasis-tcs/sarif-spec) (vendored under `tests/fixtures/` so the check runs offline).
 
 ## Roadmap
 

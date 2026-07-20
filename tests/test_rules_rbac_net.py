@@ -130,6 +130,21 @@ def test_nodeport_and_loadbalancer() -> None:
     assert not fires("KS-NET-001", clusterip)
 
 
+def test_loadbalancer_open_cidr_is_flagged() -> None:
+    # A LoadBalancer "scoped" to 0.0.0.0/0 or ::/0 is open to the whole
+    # internet and must be flagged, not treated as safely restricted.
+    open_v4 = make_svc({"type": "LoadBalancer", "loadBalancerSourceRanges": ["0.0.0.0/0"]})
+    open_v6 = make_svc({"type": "LoadBalancer", "loadBalancerSourceRanges": ["::/0"]})
+    mixed = make_svc(
+        {"type": "LoadBalancer", "loadBalancerSourceRanges": ["10.0.0.0/8", "0.0.0.0/0"]}
+    )
+    scoped = make_svc({"type": "LoadBalancer", "loadBalancerSourceRanges": ["10.0.0.0/8"]})
+    assert fires("KS-NET-001", open_v4)
+    assert fires("KS-NET-001", open_v6)
+    assert fires("KS-NET-001", mixed)
+    assert not fires("KS-NET-001", scoped)
+
+
 def test_external_ips() -> None:
     bad = make_svc({"type": "ClusterIP", "externalIPs": ["1.2.3.4"]})
     good = make_svc({"type": "ClusterIP"})

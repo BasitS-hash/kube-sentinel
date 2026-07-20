@@ -48,6 +48,7 @@ dev = [
     "bandit>=1.7",
     "pip-audit>=2.7",
     "types-PyYAML>=6.0",
+    "jsonschema>=4.20",
 ]
 
 [project.urls]

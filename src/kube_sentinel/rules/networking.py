@@ -12,6 +12,10 @@ from collections.abc import Iterator
 from ..models import Resource, Severity
 from .base import build_rule, register
 
+# CIDRs that match every address, i.e. the whole internet. A LoadBalancer
+# "scoped" to one of these is not scoped at all.
+_OPEN_CIDRS: frozenset[str] = frozenset({"0.0.0.0/0", "::/0"})
+
 
 def _check_service_exposure(resource: Resource) -> Iterator[str]:
     spec = resource.raw.get("spec", {})
@@ -24,10 +28,17 @@ def _check_service_exposure(resource: Resource) -> Iterator[str]:
         )
     elif svc_type == "LoadBalancer":
         ranges = spec.get("loadBalancerSourceRanges")
+        ranges = ranges if isinstance(ranges, list) else []
         if not ranges:
             yield (
                 "Service of type LoadBalancer has no loadBalancerSourceRanges; "
                 "it may be reachable from the entire internet"
+            )
+        elif any(str(r).strip() in _OPEN_CIDRS for r in ranges):
+            yield (
+                "Service of type LoadBalancer allows an open CIDR "
+                "(0.0.0.0/0 or ::/0) in loadBalancerSourceRanges; it is "
+                "reachable from the entire internet"
             )
 
 

@@ -61,7 +61,10 @@ def _harden_pod_spec(pod_spec: dict[str, Any]) -> None:
                 vol["emptyDir"] = {}
 
     for key in ("containers", "initContainers", "ephemeralContainers"):
-        for container in pod_spec.get(key, []):
+        containers = pod_spec.get(key)
+        if not isinstance(containers, list):
+            continue
+        for container in containers:
             if isinstance(container, dict):
                 _harden_container(container)
 
