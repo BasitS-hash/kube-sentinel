@@ -19,7 +19,8 @@ from .rules.base import Rule
 
 SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA = (
-    "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
+    "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/"
+    "sarif-2.1/schema/sarif-schema-2.1.0.json"
 )
 TOOL_NAME = "kube-sentinel"
 TOOL_VERSION = "0.1.0"
