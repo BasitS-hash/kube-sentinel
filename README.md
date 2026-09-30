@@ -26,7 +26,7 @@ The three authoritative baselines everyone is measured against are:
 ## Features
 
 - **Static manifest scanning** — recursively parses multi-document YAML (Deployments, Pods, DaemonSets, StatefulSets, Jobs, CronJobs, RBAC, Services, NetworkPolicies).
-- **22 data-driven rules** across workload security, RBAC, and networking — each mapped to CIS, PSS, NSA/CISA, and MITRE ATT&CK for Containers.
+- **21 data-driven rules** across workload security, RBAC, and networking — each mapped to CIS, PSS, NSA/CISA, and MITRE ATT&CK for Containers.
 - **Cross-resource analysis** — flags namespaces that run workloads but ship no NetworkPolicy.
 - **Optional live-cluster scanning** (`cluster` extra) — scans running workloads via your current kubeconfig context; exits cleanly with a clear message if no cluster is reachable.
 - **`harden` command** — rewrites a manifest to satisfy the restricted Pod Security Standard.
@@ -96,7 +96,7 @@ $ kube-sentinel scan examples/insecure
 ```text
 $ kube-sentinel scan examples/hardened
 ╭─────────────────────── kube-sentinel ───────────────────────╮
-│ No findings. Scanned 6 resource(s) with 22 rules.            │
+│ No findings. Scanned 6 resource(s) with 21 rules.             │
 ╰──────────────────────────────────────────────────────────────╯
 ╭───────────── Summary ──────────────╮
 │ Resources: 6   Findings: 0         │
