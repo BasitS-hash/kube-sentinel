@@ -70,3 +70,70 @@ def test_cross_resource_finding_sarif_conforms(
     assert "KS-NET-003" in result_ids
     assert result_ids <= declared_ids
     sarif_validator.validate(document)
+
+
+def test_every_result_carries_a_partial_fingerprint(
+    insecure_dir: Path, sarif_validator: jsonschema.protocols.Validator
+) -> None:
+    from kube_sentinel.report import FINGERPRINT_KEY
+
+    report = scan_resources(parse_path(insecure_dir).resources)
+    document = json.loads(to_sarif(report, load_default_rules()))
+    results = document["runs"][0]["results"]
+    assert results
+    for result in results:
+        fingerprint = result["partialFingerprints"][FINGERPRINT_KEY]
+        assert isinstance(fingerprint, str) and fingerprint
+    sarif_validator.validate(document)
+
+
+def test_fingerprints_are_unique_per_finding(insecure_dir: Path) -> None:
+    # A collision would make GitHub collapse two distinct alerts into one.
+    from kube_sentinel.report import FINGERPRINT_KEY
+
+    report = scan_resources(parse_path(insecure_dir).resources)
+    document = json.loads(to_sarif(report, load_default_rules()))
+    fingerprints = [
+        r["partialFingerprints"][FINGERPRINT_KEY] for r in document["runs"][0]["results"]
+    ]
+    assert len(set(fingerprints)) == len(fingerprints)
+
+
+def test_fingerprint_survives_a_moved_manifest() -> None:
+    # The whole point: reformatting or relocating a manifest must not retire the
+    # alert and open a fresh one.
+    from kube_sentinel.models import ComplianceMapping, Finding, Severity
+    from kube_sentinel.report import _partial_fingerprint
+
+    def finding(file_path: str) -> Finding:
+        return Finding(
+            rule_id="KS-WL-001",
+            title="Privileged container",
+            severity=Severity.CRITICAL,
+            message="container 'web' runs in privileged mode",
+            remediation="fix it",
+            resource_kind="Deployment",
+            resource_name="web",
+            namespace="demo",
+            file_path=file_path,
+            mapping=ComplianceMapping(),
+        )
+
+    assert _partial_fingerprint(finding("manifests/web.yaml")) == _partial_fingerprint(
+        finding("deploy/apps/web.yaml")
+    )
+
+
+def test_narrowed_rule_list_still_declares_every_result(
+    insecure_dir: Path, sarif_validator: jsonschema.protocols.Validator
+) -> None:
+    # SARIF rejects a result whose ruleId resolves to nothing. Callers that
+    # pass a narrowed rule list get the referenced rules declared out-of-band
+    # rather than an invalid document.
+    report = scan_resources(parse_path(insecure_dir).resources)
+    document = json.loads(to_sarif(report, []))
+    result_ids = {r["ruleId"] for r in document["runs"][0]["results"]}
+    declared_ids = {r["id"] for r in document["runs"][0]["tool"]["driver"]["rules"]}
+    assert result_ids
+    assert result_ids <= declared_ids
+    sarif_validator.validate(document)

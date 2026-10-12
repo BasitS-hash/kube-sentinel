@@ -6,6 +6,7 @@ so output is fully testable without touching the terminal.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -14,7 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .engine import ScanReport
-from .models import Severity
+from .models import Finding, Severity
 from .rules.base import Rule
 
 SARIF_VERSION = "2.1.0"
@@ -25,6 +26,11 @@ SARIF_SCHEMA = (
 TOOL_NAME = "kube-sentinel"
 TOOL_VERSION = "0.1.0"
 TOOL_URI = "https://github.com/BasitS-hash/kube-sentinel"
+
+# Namespaced and versioned, per the SARIF guidance on partialFingerprints: the
+# version suffix lets us change how the identity is computed later without
+# silently re-keying every existing alert.
+FINGERPRINT_KEY = "kubeSentinelFindingIdentity/v1"
 
 _SEVERITY_STYLE: dict[Severity, str] = {
     Severity.CRITICAL: "bold white on red",
@@ -171,10 +177,38 @@ def _security_severity(severity: Severity) -> str:
     return mapping[severity]
 
 
+def _partial_fingerprint(finding: Finding) -> str:
+    """A location-independent identity for a finding.
+
+    With no partialFingerprints, GitHub keys an alert on file + line + rule.
+    kube-sentinel reports every finding at startLine 1 because a parsed YAML
+    document does not carry line numbers back to us, so that fallback would
+    collapse every finding in a file onto one alert and re-open all of them the
+    moment a manifest is reformatted or moved.
+
+    What actually identifies a finding is the rule, the resource it fired on,
+    and the specific thing it said. The message is in the hash because it is
+    what separates two containers in one pod; the cost is that rewording a
+    message retires the old alert and opens a new one, which is the better
+    trade than silently merging distinct findings.
+    """
+    identity = "\x1f".join(
+        (
+            finding.rule_id,
+            finding.resource_kind,
+            finding.resource_name,
+            finding.namespace or "default",
+            finding.message,
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
 def to_sarif(report: ScanReport, rules: list[Rule]) -> str:
     """Serialize a report to SARIF 2.1.0 for GitHub code scanning."""
-    # SARIF requires every result's ruleId to resolve to a declared rule. Include
-    # the cross-resource netpol rule even though it isn't in the registry list.
+    # SARIF requires every result's ruleId to resolve to a declared rule. Every
+    # built-in rule is in the registry, but a caller may pass a narrowed list,
+    # so declare anything a result references that `rules` does not cover.
     rule_ids = {r.id for r in rules}
     declared = list(rules)
 
@@ -219,6 +253,7 @@ def to_sarif(report: ScanReport, rules: list[Rule]) -> str:
                         ],
                     }
                 ],
+                "partialFingerprints": {FINGERPRINT_KEY: _partial_fingerprint(f)},
                 "properties": {
                     "resource": f"{f.resource_kind}/{f.resource_name}",
                     "namespace": f.namespace or "default",

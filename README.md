@@ -30,7 +30,7 @@ The three authoritative baselines everyone is measured against are:
 - **Cross-resource analysis** — two of those rules only have an answer with the whole set in view: a namespace that runs workloads but ships no NetworkPolicy, and a workload that mounts a ServiceAccount some binding has made admin-equivalent.
 - **Optional live-cluster scanning** (`cluster` extra) — scans running workloads via your current kubeconfig context; exits cleanly with a clear message if no cluster is reachable.
 - **`harden` command** — rewrites a manifest to satisfy the restricted Pod Security Standard.
-- **Multiple outputs** — rich terminal table (default), `--json`, and valid **SARIF 2.1.0** for GitHub code scanning.
+- **Multiple outputs** — rich terminal table (default), `--json`, and valid **SARIF 2.1.0** for GitHub code scanning, with location-independent `partialFingerprints` so reformatting a manifest does not reopen every alert.
 - **Posture score and grade** — a 0–100 score and an A+→F letter grade summarising overall posture.
 - **Configurable failure gate** — `--fail-on {CRITICAL,HIGH,MEDIUM,LOW,INFO}` controls the CI exit code.
 
@@ -198,6 +198,8 @@ jobs:
         with:
           sarif_file: kube-sentinel.sarif
 ```
+
+Each result carries a `partialFingerprints` entry derived from the rule, the resource, and the message — never the file path or line number. Without one, GitHub keys an alert on file + line + rule; kube-sentinel reports every finding at line 1, because parsed YAML does not hand line numbers back, so that fallback would collapse a file's findings into one alert and reopen all of them whenever a manifest moved. One consequence worth knowing: rewording a rule's message retires the old alert and opens a new one.
 
 This repository **dogfoods itself**: the [`kube-sentinel-scan` workflow](.github/workflows/kube-sentinel-scan.yml) scans `examples/insecure`, uploads the SARIF, and gates on `examples/hardened` staying clean.
 
