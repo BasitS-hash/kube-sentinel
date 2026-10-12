@@ -180,7 +180,9 @@ jobs:
           sarif_file: kube-sentinel.sarif
 ```
 
-This repository **dogfoods itself**: the [`kube-sentinel-scan` workflow](.github/workflows/kube-sentinel-scan.yml) scans `examples/insecure`, uploads the SARIF, and gates on `examples/hardened` staying clean.
+This repository **dogfoods itself**: the [`kube-sentinel-scan` workflow](.github/workflows/kube-sentinel-scan.yml) scans `examples/insecure` and keeps that SARIF as a downloadable artifact, gates the build on `examples/hardened` staying clean, and uploads the hardened SARIF to code scanning so the publish path above is exercised on every run.
+
+The insecure findings are deliberately *not* filed as repository alerts. They are all intentional — that is what the fixture is for — so publishing them would leave the Security tab permanently full of expected findings and turn every pull request touching those fixtures red. A red X that is always red carries no information, and a security tool that trains people to ignore its own alerts has a worse problem than a missing integration demo.
 
 ## How it works
 
