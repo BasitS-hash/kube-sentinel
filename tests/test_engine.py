@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from kube_sentinel.engine import score_to_grade
 from kube_sentinel.models import ComplianceMapping, Finding, Resource, Severity
 from kube_sentinel.rules.base import Rule, build_rule
@@ -124,3 +126,24 @@ def test_rule_applies_to_none_runs_everywhere() -> None:
     )
     rule.evaluate(_resource())
     assert seen == ["Pod"]
+
+
+def test_rule_requires_exactly_one_check() -> None:
+    # The two check shapes are alternatives, not a pair. A rule with neither
+    # would silently never fire; a rule with both would run twice.
+    def per_resource(resource: Resource):
+        return iter(())
+
+    def cross(context):
+        return iter(())
+
+    for kwargs in ({}, {"check": per_resource, "cross_check": cross}):
+        with pytest.raises(ValueError, match="exactly one of check/cross_check"):
+            Rule(
+                id="BAD",
+                title="bad",
+                severity=Severity.INFO,
+                remediation="n/a",
+                mapping=ComplianceMapping(),
+                **kwargs,
+            )
