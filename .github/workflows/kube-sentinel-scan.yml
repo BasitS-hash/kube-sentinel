@@ -1,8 +1,23 @@
 name: kube-sentinel self-scan
 
-# Dogfooding: kube-sentinel scans its own insecure example manifests and
-# uploads the results to the GitHub Security tab as SARIF. This demonstrates
-# the exact CI integration users would adopt for their own manifests.
+# Dogfooding, in two parts.
+#
+# 1. The regression gate: the hardened example set must keep coming back clean.
+#    That is a gate on the detector, not just on the code — if a rule starts
+#    false-positiving, this fails.
+#
+# 2. The integration demo: a real SARIF upload to the GitHub Security tab, so the
+#    publish path users would adopt is exercised on every run rather than only
+#    documented.
+#
+# The demo uploads the HARDENED scan, not the insecure one. Publishing findings
+# from deliberately-vulnerable fixtures as repository alerts turns every pull
+# request that touches those fixtures red: the alerts are all intentional, so the
+# red X carries no information, and a security tool whose own Security tab is
+# permanently full of expected findings is teaching people to ignore it. The
+# insecure findings are still produced and kept — as a build artifact you can
+# download and a summary printed in the job log — they are just not filed as
+# repository alerts.
 
 on:
   push:
@@ -32,16 +47,31 @@ jobs:
         run: pip install -e .
 
       - name: Scan insecure examples and emit SARIF
-        # Do not fail the job on findings here; we only want to publish them.
+        # Findings here are the point of the fixture, so they must not fail the job.
         run: |
           kube-sentinel scan examples/insecure \
-            --sarif -o kube-sentinel.sarif --fail-on CRITICAL || true
+            --sarif -o kube-sentinel-insecure.sarif --fail-on CRITICAL || true
 
-      - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Summarise the insecure findings in the job log
+        run: kube-sentinel scan examples/insecure || true
+
+      - name: Keep the insecure SARIF as an artifact
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: kube-sentinel.sarif
-          category: kube-sentinel
+          name: kube-sentinel-insecure-sarif
+          path: kube-sentinel-insecure.sarif
+          if-no-files-found: error
 
       - name: Gate on hardened examples (must be clean)
-        run: kube-sentinel scan examples/hardened --fail-on HIGH
+        run: |
+          kube-sentinel scan examples/hardened \
+            --sarif -o kube-sentinel-hardened.sarif --fail-on HIGH
+
+      - name: Upload the hardened SARIF to code scanning
+        # The integration demo. A clean scan still exercises the full publish path
+        # and, being clean, files no alerts.
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: kube-sentinel-hardened.sarif
+          category: kube-sentinel
