@@ -3,6 +3,11 @@
 The engine is decoupled from input source (files vs. live cluster) and from
 output format. It takes resources, produces findings, and computes a posture
 score and letter grade.
+
+It knows nothing about individual rules. Per-resource rules are run once per
+resource; cross-resource rules are run once over a ``ScanContext`` holding the
+whole set. Both kinds come out of the same registry, so the reported rule count
+is simply its size.
 """
 
 from __future__ import annotations
@@ -10,22 +15,13 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .models import ComplianceMapping, Finding, Resource, Severity
+from .models import Finding, Resource, Severity
 from .rules import load_default_rules
-from .rules.base import Rule
+from .rules.base import Rule, ScanContext
 
 # A perfect scan starts at 100 and loses points per finding by severity weight,
 # floored at 0. This is a deliberately simple, explainable scoring model.
 MAX_SCORE = 100
-
-# Cross-resource check identity (namespaces lacking a NetworkPolicy).
-NETPOL_RULE_ID = "KS-NET-003"
-_NETPOL_MAPPING = ComplianceMapping(
-    cis=("5.3.2",),
-    pss=(),
-    nsa_cisa=("Network Separation: default-deny with NetworkPolicies",),
-    mitre_attack=("T1046 Network Service Discovery", "T1021 Remote Services"),
-)
 
 
 @dataclass(frozen=True)
@@ -77,63 +73,6 @@ def _sort_key(finding: Finding) -> tuple[int, str, str, str]:
     )
 
 
-def _namespaces_with_workloads(resources: tuple[Resource, ...]) -> set[str]:
-    workload_like = {
-        "Deployment",
-        "StatefulSet",
-        "DaemonSet",
-        "ReplicaSet",
-        "Pod",
-        "Job",
-        "CronJob",
-    }
-    out: set[str] = set()
-    for r in resources:
-        if r.kind in workload_like:
-            out.add(r.namespace or "default")
-    return out
-
-
-def _namespaces_with_netpol(resources: tuple[Resource, ...]) -> set[str]:
-    return {(r.namespace or "default") for r in resources if r.kind == "NetworkPolicy"}
-
-
-def _missing_netpol_findings(resources: tuple[Resource, ...]) -> list[Finding]:
-    """Flag namespaces that host workloads but have no NetworkPolicy."""
-    with_workloads = _namespaces_with_workloads(resources)
-    with_netpol = _namespaces_with_netpol(resources)
-    missing = sorted(with_workloads - with_netpol)
-    findings: list[Finding] = []
-    for ns in missing:
-        # Attribute the finding to the first file that touches the namespace,
-        # for a stable, useful location in reports.
-        file_path = next(
-            (r.file_path for r in resources if (r.namespace or "default") == ns),
-            "<cluster>",
-        )
-        findings.append(
-            Finding(
-                rule_id=NETPOL_RULE_ID,
-                title="Namespace without NetworkPolicy",
-                severity=Severity.MEDIUM,
-                message=(
-                    f"namespace '{ns}' runs workloads but has no NetworkPolicy; "
-                    "pod-to-pod traffic is unrestricted by default"
-                ),
-                remediation=(
-                    "Apply a default-deny NetworkPolicy per namespace and then "
-                    "allow only required ingress/egress flows."
-                ),
-                resource_kind="Namespace",
-                resource_name=ns,
-                namespace=ns,
-                file_path=file_path,
-                mapping=_NETPOL_MAPPING,
-            )
-        )
-    return findings
-
-
 def scan_resources(
     resources: tuple[Resource, ...],
     rules: list[Rule] | None = None,
@@ -146,8 +85,11 @@ def scan_resources(
         for rule in active_rules:
             findings.extend(rule.evaluate(resource))
 
-    # Cross-resource checks operate on the whole set.
-    findings.extend(_missing_netpol_findings(resources))
+    # Correlation rules need every resource at once. Everything they read comes
+    # off the context, so adding one never touches the engine.
+    context = ScanContext(resources=resources)
+    for rule in active_rules:
+        findings.extend(rule.evaluate_context(context))
 
     findings.sort(key=_sort_key)
     severity_counts = Counter(f.severity for f in findings)
@@ -155,6 +97,6 @@ def scan_resources(
     return ScanReport(
         findings=tuple(findings),
         resource_count=len(resources),
-        rule_count=len(active_rules) + 1,  # +1 for the cross-resource netpol check
+        rule_count=len(active_rules),
         severity_counts=dict(severity_counts),
     )

@@ -26,8 +26,8 @@ The three authoritative baselines everyone is measured against are:
 ## Features
 
 - **Static manifest scanning** — recursively parses multi-document YAML (Deployments, Pods, DaemonSets, StatefulSets, Jobs, CronJobs, RBAC, Services, NetworkPolicies).
-- **21 data-driven rules** across workload security, RBAC, and networking — each mapped to CIS, PSS, NSA/CISA, and MITRE ATT&CK for Containers.
-- **Cross-resource analysis** — flags namespaces that run workloads but ship no NetworkPolicy.
+- **23 data-driven rules** across workload security, RBAC, and networking — each mapped to CIS, PSS, NSA/CISA, and MITRE ATT&CK for Containers.
+- **Cross-resource analysis** — two of those rules only have an answer with the whole set in view: a namespace that runs workloads but ships no NetworkPolicy, and a workload that mounts a ServiceAccount some binding has made admin-equivalent.
 - **Optional live-cluster scanning** (`cluster` extra) — scans running workloads via your current kubeconfig context; exits cleanly with a clear message if no cluster is reachable.
 - **`harden` command** — rewrites a manifest to satisfy the restricted Pod Security Standard.
 - **Multiple outputs** — rich terminal table (default), `--json`, and valid **SARIF 2.1.0** for GitHub code scanning.
@@ -86,8 +86,8 @@ The repo ships an `examples/insecure` set and a matching `examples/hardened` set
 $ kube-sentinel scan examples/insecure
 ...
 ╭───────────────── Summary ─────────────────╮
-│ Resources: 10   Findings: 42              │
-│ CRITICAL: 3  HIGH: 15  MEDIUM: 20  LOW: 4 │
+│ Resources: 13   Findings: 48              │
+│ CRITICAL: 8  HIGH: 15  MEDIUM: 21  LOW: 4 │
 │                                           │
 │ Posture score: 0/100   Grade: F           │
 ╰───────────────────────────────────────────╯
@@ -96,10 +96,10 @@ $ kube-sentinel scan examples/insecure
 ```text
 $ kube-sentinel scan examples/hardened
 ╭─────────────────────── kube-sentinel ───────────────────────╮
-│ No findings. Scanned 6 resource(s) with 21 rules.             │
+│ No findings. Scanned 10 resource(s) with 23 rules.           │
 ╰──────────────────────────────────────────────────────────────╯
 ╭───────────── Summary ──────────────╮
-│ Resources: 6   Findings: 0         │
+│ Resources: 10   Findings: 0        │
 │ clean                              │
 │                                    │
 │ Posture score: 100/100   Grade: A+ │
@@ -114,6 +114,24 @@ CRITICAL  KS-WL-001  Deployment/web (ns: demo)
           → Remove 'privileged: true' from the container securityContext.
           CIS 5.2.5 · PSS baseline:Privileged Containers · MITRE T1611 Escape to Host
 ```
+
+### The finding one resource at a time cannot produce
+
+`examples/insecure/service-account-privilege.yaml` ships a Deployment that passes every per-resource workload rule: non-root, read-only root filesystem, all capabilities dropped, seccomp on, digest-pinned image, probes and limits set. It is still a cluster takeover, and only the correlation says so:
+
+```text
+CRITICAL  KS-RBAC-006  Deployment/ci-runner (ns: demo)
+          Deployment/ci-runner mounts ServiceAccount 'ci-runner' (ns: demo),
+          which ClusterRoleBinding/ci-runner-admin binds to the built-in
+          cluster-admin ClusterRole
+          → Bind the ServiceAccount to a narrowly scoped Role instead of
+            cluster-admin, or set automountServiceAccountToken: false.
+          CIS 5.1.1, 5.1.6 · MITRE T1098 Account Manipulation · T1528 Steal App Access Token
+```
+
+Scanned on their own, the binding is a `KS-RBAC-004` CRITICAL that may well be dead weight, and the mounted token is a `KS-WL-013` MEDIUM that is usually harmless. The pair is a direct path from one container compromise to control of the cluster. Invert either half — bind the SA to a least-privilege Role, or set `automountServiceAccountToken: false` — and `KS-RBAC-006` goes quiet; `examples/hardened/service-account-privilege.yaml` is the same workload wired up both ways.
+
+The same scan also finds three pre-existing paths in the older example manifests, via the `default` ServiceAccount nobody named: `Deployment/web`, `Pod/debug-pod`, and `CronJob/backup` all inherit `demo`'s `default` SA, which `ClusterRoleBinding/dangerous-admin-binding` had already bound to `cluster-admin`. That is the class of mistake this rule exists to catch.
 
 ## Rule catalog
 
@@ -138,9 +156,10 @@ CRITICAL  KS-WL-001  Deployment/web (ns: demo)
 | `KS-RBAC-003` | Pod `exec`/`attach` permission | MEDIUM | 5.1.4 | — | T1609 Container Admin Command |
 | `KS-RBAC-004` | `cluster-admin` binding | CRITICAL | 5.1.1 | — | T1098 Account Manipulation |
 | `KS-RBAC-005` | Binding to unauthenticated principal | CRITICAL | 5.1.1 | — | T1078 Valid Accounts |
+| `KS-RBAC-006` | Workload mounts an admin-equivalent service account _(cross-resource)_ | CRITICAL | 5.1.1, 5.1.6 | — | T1098 Account Manipulation / T1528 Steal App Access Token |
 | `KS-NET-001` | Broadly exposed Service (NodePort / open LoadBalancer) | MEDIUM | 5.3.2 | — | T1190 Exploit Public-Facing App |
 | `KS-NET-002` | Service uses `externalIPs` | HIGH | 5.3.2 | — | T1190 Exploit Public-Facing App |
-| `KS-NET-003` | Namespace without a NetworkPolicy | MEDIUM | 5.3.2 | — | T1046 Network Service Discovery |
+| `KS-NET-003` | Namespace without a NetworkPolicy _(cross-resource)_ | MEDIUM | 5.3.2 | — | T1046 Network Service Discovery |
 
 Run `kube-sentinel rules` for the full mapping including the NSA/CISA themes.
 
@@ -150,7 +169,7 @@ kube-sentinel maps findings to the [MITRE ATT&CK for Containers](https://attack.
 
 - **T1611 Escape to Host** — privileged containers, host namespaces, dangerous capabilities, unconfined seccomp.
 - **T1610 Deploy Container** / **T1525 Implant Internal Image** — untrusted/mutable images and overly permissive pod specs.
-- **T1078 Valid Accounts** / **T1098 Account Manipulation** — RBAC wildcards, `cluster-admin` bindings, anonymous bindings.
+- **T1078 Valid Accounts** / **T1098 Account Manipulation** — RBAC wildcards, `cluster-admin` bindings, anonymous bindings, and workloads that actually mount an admin-equivalent service account.
 - **T1552 Unsecured Credentials** / **T1528 Steal Application Access Token** — broad secrets access, auto-mounted SA tokens.
 - **T1190 Exploit Public-Facing Application** — over-exposed Services and `externalIPs`.
 
@@ -187,10 +206,13 @@ This repository **dogfoods itself**: the [`kube-sentinel-scan` workflow](.github
 ```
 parser ─► resources ─► engine ─► rule pack ─► findings ─► renderer (table / json / sarif)
                           │
-                          └─ cross-resource checks (e.g. namespaces lacking NetworkPolicy)
+                          ├─ per-resource rules: run once per resource
+                          └─ cross-resource rules: run once over a ScanContext
+                             holding the whole set
 ```
 
-- **Rules are data.** Each rule declares its ID, severity, remediation, and compliance mapping, plus a pure `check` function. New rule packs register themselves into a central registry — no engine changes required.
+- **Rules are data.** Each rule declares its ID, severity, remediation, and compliance mapping, plus a pure check function. New rule packs register themselves into a central registry — no engine changes required.
+- **A rule carries exactly one check.** `check` sees a single resource; `cross_check` sees every resource at once, via a `ScanContext`. Risks that only exist as a combination need the second shape — a `cluster-admin` binding is inert until a workload mounts the bound ServiceAccount — and `Rule` rejects neither-or-both, so a rule cannot quietly never fire. Both shapes live in the same registry, which is why the reported rule count is one derived number instead of a constant someone has to remember to bump.
 - **Inputs are decoupled from rules.** The same rule pack runs over parsed YAML and over live-cluster objects (which the kubernetes client serialises to the same camelCase shape).
 - **Outputs are pure functions** of the report, so every renderer is unit-tested without touching a terminal.
 
@@ -207,9 +229,9 @@ src/kube_sentinel/
 ├── report.py       # rich table, JSON, SARIF 2.1.0 renderers
 ├── cluster.py      # optional kubernetes-client live scanning (graceful)
 └── rules/
-    ├── base.py     # Rule abstraction + registry
+    ├── base.py     # Rule abstraction (per-resource + cross-resource) + registry
     ├── workload.py # KS-WL-* (PSS baseline + restricted)
-    ├── rbac.py     # KS-RBAC-*
+    ├── rbac.py     # KS-RBAC-* (incl. the RBAC↔workload correlation)
     └── networking.py # KS-NET-*
 ```
 
@@ -226,6 +248,8 @@ pip-audit                     # dependency CVEs
 ```
 
 The test suite asserts that the insecure examples trip the full range of rules, that the hardened examples produce **zero** findings, that malformed-but-valid manifests (e.g. a null `containers:` field) are handled without crashing, and that emitted SARIF validates against the official [SARIF 2.1.0 JSON schema](https://github.com/oasis-tcs/sarif-spec) (vendored under `tests/fixtures/` so the check runs offline).
+
+It also checks the rule catalog against itself: the rule table and the rule count in this README are compared to the registry, so a new rule nobody documented fails CI instead of quietly drifting the numbers apart.
 
 ## Roadmap
 

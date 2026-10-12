@@ -112,6 +112,21 @@ def effective_run_as_user(pod_spec: dict[str, Any], container: dict[str, Any]) -
     return None
 
 
+def service_account_name(pod_spec: dict[str, Any]) -> str:
+    """Resolve the ServiceAccount a pod runs as.
+
+    ``serviceAccountName`` is the current field; ``serviceAccount`` is its
+    deprecated alias and still shows up in older manifests. With neither set the
+    API server assigns the namespace's ``default`` ServiceAccount — the case
+    that makes a forgotten binding on 'default' genuinely dangerous.
+    """
+    for key in ("serviceAccountName", "serviceAccount"):
+        value = pod_spec.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return "default"
+
+
 def image_tag(image: str) -> str | None:
     """Extract the tag from an image reference, or None if untagged.
 

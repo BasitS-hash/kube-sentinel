@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from .. import k8s
 from ..models import Resource, Severity
-from .base import build_rule, register
+from .base import CrossHit, ScanContext, build_rule, register
 
 # CIDRs that match every address, i.e. the whole internet. A LoadBalancer
 # "scoped" to one of these is not scoped at all.
@@ -82,5 +83,48 @@ register(
         nsa_cisa=("Network Separation: control ingress paths",),
         mitre_attack=("T1190 Exploit Public-Facing Application",),
         applies_to=frozenset({"Service"}),
+    )
+)
+
+
+def _check_missing_networkpolicy(context: ScanContext) -> Iterator[CrossHit]:
+    """Flag namespaces that host workloads but ship no NetworkPolicy.
+
+    Cross-resource because no single object can answer it: a Deployment is not
+    at fault for the policy that is missing beside it.
+    """
+    with_workloads = context.namespaces_of(k8s.POD_BEARING_KINDS)
+    with_netpol = context.namespaces_of(frozenset({"NetworkPolicy"}))
+    for ns in sorted(with_workloads - with_netpol):
+        # Attribute the finding to the first file that touches the namespace,
+        # for a stable, useful location in reports.
+        file_path = next(
+            (r.file_path for r in context.resources if (r.namespace or "default") == ns),
+            "<cluster>",
+        )
+        yield CrossHit(
+            message=(
+                f"namespace '{ns}' runs workloads but has no NetworkPolicy; "
+                "pod-to-pod traffic is unrestricted by default"
+            ),
+            resource_kind="Namespace",
+            resource_name=ns,
+            namespace=ns,
+            file_path=file_path,
+        )
+
+
+register(
+    build_rule(
+        id="KS-NET-003",
+        title="Namespace without NetworkPolicy",
+        severity=Severity.MEDIUM,
+        remediation="Apply a default-deny NetworkPolicy per namespace and then "
+        "allow only required ingress/egress flows.",
+        cross_check=_check_missing_networkpolicy,
+        cis=("5.3.2",),
+        pss=(),
+        nsa_cisa=("Network Separation: default-deny with NetworkPolicies",),
+        mitre_attack=("T1046 Network Service Discovery", "T1021 Remote Services"),
     )
 )

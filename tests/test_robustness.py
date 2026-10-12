@@ -67,3 +67,75 @@ def test_non_list_volumes_ignored() -> None:
     rule = get_rule("KS-WL-009")
     assert rule is not None
     assert rule.evaluate(resource) == []
+
+
+def test_binding_with_null_or_scalar_subjects_does_not_crash() -> None:
+    # 'subjects:' with no value parses to None; a hand-mangled manifest can
+    # also leave a scalar there. Neither may abort the correlation walk.
+    def binding(subjects: Any) -> Resource:
+        return Resource(
+            kind="ClusterRoleBinding",
+            name="b",
+            namespace=None,
+            api_version="rbac.authorization.k8s.io/v1",
+            file_path="mem://b",
+            doc_index=0,
+            raw={
+                "kind": "ClusterRoleBinding",
+                "roleRef": {"kind": "ClusterRole", "name": "cluster-admin"},
+                "subjects": subjects,
+            },
+        )
+
+    for subjects in (None, "oops", [None, 7]):
+        report = scan_resources((_pod({"containers": [{"name": "c"}]}), binding(subjects)))
+        assert not any(f.rule_id == "KS-RBAC-006" for f in report.findings)
+
+
+def test_binding_without_a_role_ref_name_is_ignored() -> None:
+    # An empty or missing roleRef tells us nothing; it must not be treated as a
+    # grant, and it must not raise.
+    for role_ref in (None, {}, {"kind": "ClusterRole"}, "cluster-admin"):
+        binding = Resource(
+            kind="ClusterRoleBinding",
+            name="b",
+            namespace=None,
+            api_version="rbac.authorization.k8s.io/v1",
+            file_path="mem://b",
+            doc_index=0,
+            raw={
+                "kind": "ClusterRoleBinding",
+                "roleRef": role_ref,
+                "subjects": [{"kind": "ServiceAccount", "name": "default", "namespace": "demo"}],
+            },
+        )
+        report = scan_resources((_pod({"containers": [{"name": "c"}]}), binding))
+        assert not any(f.rule_id == "KS-RBAC-006" for f in report.findings)
+
+
+def test_workload_with_no_pod_spec_is_skipped_by_the_correlation() -> None:
+    # A Deployment whose spec.template is missing has nothing to correlate.
+    broken = Resource(
+        kind="Deployment",
+        name="d",
+        namespace="demo",
+        api_version="apps/v1",
+        file_path="mem://d",
+        doc_index=0,
+        raw={"kind": "Deployment", "spec": {"replicas": 1}},
+    )
+    binding = Resource(
+        kind="ClusterRoleBinding",
+        name="b",
+        namespace=None,
+        api_version="rbac.authorization.k8s.io/v1",
+        file_path="mem://b",
+        doc_index=0,
+        raw={
+            "kind": "ClusterRoleBinding",
+            "roleRef": {"kind": "ClusterRole", "name": "cluster-admin"},
+            "subjects": [{"kind": "ServiceAccount", "name": "default", "namespace": "demo"}],
+        },
+    )
+    report = scan_resources((broken, binding))
+    assert not any(f.rule_id == "KS-RBAC-006" for f in report.findings)
