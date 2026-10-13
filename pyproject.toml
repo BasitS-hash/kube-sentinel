@@ -94,7 +94,6 @@ addopts = "-ra"
 
 [tool.coverage.run]
 source = ["kube_sentinel"]
-omit = ["*/cluster.py"]
 
 [tool.bandit]
 exclude_dirs = ["tests", "examples"]

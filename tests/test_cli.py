@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from kube_sentinel.cli import app
@@ -73,9 +74,47 @@ def test_scan_empty_dir(tmp_path: Path) -> None:
     assert result.exit_code == 0
 
 
-def test_cluster_without_client_exits_cleanly() -> None:
-    # The kubernetes client is not installed in the dev env, so this must
-    # report unavailable and exit 2 rather than crash.
+def test_cluster_without_client_exits_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The no-client path, forced rather than inferred from the environment. This
+    # test used to rely on `kubernetes` being absent from the dev env; now that
+    # the dev install includes the cluster extra (so the parity tests can run),
+    # relying on that would instead have the test load the developer's real
+    # kubeconfig and reach for whatever cluster it points at.
+    from kube_sentinel import cluster as cluster_mod
+
+    def no_client() -> tuple[object, object]:
+        raise cluster_mod.ClusterScanError(
+            "The 'kubernetes' client is not installed. Install the cluster "
+            "extra: pip install 'kube-sentinel[cluster]'"
+        )
+
+    monkeypatch.setattr(cluster_mod, "_import_kubernetes", no_client)
+
     result = runner.invoke(app, ["cluster"])
     assert result.exit_code == 2
-    assert "unavailable" in result.stdout.lower() or "unavailable" in str(result.output).lower()
+    assert "unavailable" in str(result.output).lower()
+    assert "not installed" in str(result.output).lower()
+
+
+def test_cluster_with_unreachable_cluster_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The client is present but no context loads. Separate from the above
+    # because the two produce different messages and only one of them tells the
+    # user to install something.
+    from kube_sentinel import cluster as cluster_mod
+
+    class _NoConfig:
+        @staticmethod
+        def load_kube_config(context: str | None = None) -> None:
+            raise RuntimeError("no kubeconfig")
+
+        @staticmethod
+        def load_incluster_config() -> None:
+            raise RuntimeError("not in a cluster")
+
+    monkeypatch.setattr(cluster_mod, "_import_kubernetes", lambda: (object(), _NoConfig))
+
+    result = runner.invoke(app, ["cluster"])
+    assert result.exit_code == 2
+    assert "no reachable cluster" in str(result.output).lower()

@@ -28,7 +28,7 @@ The three authoritative baselines everyone is measured against are:
 - **Static manifest scanning** — recursively parses multi-document YAML (Deployments, Pods, DaemonSets, StatefulSets, Jobs, CronJobs, RBAC, Services, NetworkPolicies).
 - **23 data-driven rules** across workload security, RBAC, and networking — each mapped to CIS, PSS, NSA/CISA, and MITRE ATT&CK for Containers.
 - **Cross-resource analysis** — two of those rules only have an answer with the whole set in view: a namespace that runs workloads but ships no NetworkPolicy, and a workload that mounts a ServiceAccount some binding has made admin-equivalent.
-- **Optional live-cluster scanning** (`cluster` extra) — scans running workloads via your current kubeconfig context; exits cleanly with a clear message if no cluster is reachable.
+- **Optional live-cluster scanning** (`cluster` extra) — scans running workloads via your current kubeconfig context; exits cleanly with a clear message if no cluster is reachable, and **refuses to print a score** if it could not read the cluster completely (see [Live-cluster scans fail loudly](#live-cluster-scans-fail-loudly)).
 - **`harden` command** — rewrites a manifest to satisfy the restricted Pod Security Standard.
 - **Multiple outputs** — rich terminal table (default), `--json`, and valid **SARIF 2.1.0** for GitHub code scanning, with location-independent `partialFingerprints` so reformatting a manifest does not reopen every alert.
 - **Posture score and grade** — a 0–100 score and an A+→F letter grade summarising overall posture.
@@ -50,7 +50,7 @@ From source:
 git clone https://github.com/BasitS-hash/kube-sentinel.git
 cd kube-sentinel
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,cluster]"   # cluster extra: needed by the parity tests
 ```
 
 ## Usage
@@ -217,8 +217,31 @@ parser ─► resources ─► engine ─► rule pack ─► findings ─► re
 
 - **Rules are data.** Each rule declares its ID, severity, remediation, and compliance mapping, plus a pure check function. New rule packs register themselves into a central registry — no engine changes required.
 - **A rule carries exactly one check.** `check` sees a single resource; `cross_check` sees every resource at once, via a `ScanContext`. Risks that only exist as a combination need the second shape — a `cluster-admin` binding is inert until a workload mounts the bound ServiceAccount — and `Rule` rejects neither-or-both, so a rule cannot quietly never fire. Both shapes live in the same registry, which is why the reported rule count is one derived number instead of a constant someone has to remember to bump.
-- **Inputs are decoupled from rules.** The same rule pack runs over parsed YAML and over live-cluster objects (which the kubernetes client serialises to the same camelCase shape).
+- **Inputs are decoupled from rules.** The same rule pack runs over parsed YAML and over live-cluster objects. This holds on one specific detail: `cluster.py` serialises client models with `ApiClient.sanitize_for_serialization`, which emits the camelCase API field names, and *not* with `to_dict()`, which returns the models' snake_case attribute names (`security_context`, `host_network`). The rules navigate camelCase, so swapping the two would make every rule match nothing on a live cluster — and report a clean posture rather than an error. `tests/test_cluster_parity.py` pins it: the same rule IDs must fire on a manifest and on the equivalent client object, across all three rule packs.
 - **Outputs are pure functions** of the report, so every renderer is unit-tested without touching a terminal.
+
+### Live-cluster scans fail loudly
+
+A posture scanner that reads part of a cluster and prints a score has not failed safely — it has
+reported a clean bill of health it never earned, and exit code 0 on a broken scan is worse than a
+crash. Three paths in `cluster.py` therefore raise instead of returning:
+
+- **Partial list responses.** Every `list_*` call is paged with an explicit `limit` and follows the
+  API server's `continue` token to exhaustion. An unbounded list is the single response most likely
+  to be rejected or time out on a large cluster; once you ask for pages, following the token is
+  mandatory, because a bounded list whose token you ignored would scan the first page and then score
+  the whole cluster. The paging loop is itself bounded, and exceeding that bound raises rather than
+  spins — a hung scan is indistinguishable from a slow one.
+- **An object that will not serialise.** Previously this became an empty dict, so the object reached
+  the engine with no fields, every rule found nothing wrong with it, and the scan reported success
+  for something it never read.
+- **A scan that collected nothing at all.** A reachable cluster is never empty — kube-system alone
+  guarantees pods. Zero resources means the scan did not see the cluster (credentials scoped to
+  namespaces they cannot list, the wrong context, a proxy answering with empty lists), so reporting
+  100/A+ would be the worst available outcome: indistinguishable from good news.
+
+`cluster.py` is no longer excluded from the coverage gate. It previously was, which is how 145 lines
+of the only code path that talks to a real cluster sat untested behind a 97% number.
 
 ## Project layout
 
@@ -242,7 +265,7 @@ src/kube_sentinel/
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,cluster]"   # cluster extra: needed by the parity tests
 ruff check src tests          # lint
 ruff format src tests         # format
 mypy                          # type-check
@@ -252,6 +275,14 @@ pip-audit                     # dependency CVEs
 ```
 
 The test suite asserts that the insecure examples trip the full range of rules, that the hardened examples produce **zero** findings, that malformed-but-valid manifests (e.g. a null `containers:` field) are handled without crashing, and that emitted SARIF validates against the official [SARIF 2.1.0 JSON schema](https://github.com/oasis-tcs/sarif-spec) (vendored under `tests/fixtures/` so the check runs offline).
+
+It also asserts **input parity**: that a rule firing on a manifest fires on the equivalent live-cluster
+object, for a privileged container, a `cluster-admin` ClusterRoleBinding, and a NodePort Service — one
+case per rule pack, plus the three scanned together so the cross-resource rules are covered too. Those
+fixtures are built as real `kubernetes` client model objects and pushed through `cluster.py`'s own
+serialisation, so the expected shape comes from the library rather than from an assumption about it.
+This is a shape check, not a cluster check: it cannot verify that the API server returns what the
+client's models say it does, and no test here talks to a real cluster.
 
 It also checks the rule catalog against itself: the rule table and the rule count in this README are compared to the registry, so a new rule nobody documented fails CI instead of quietly drifting the numbers apart.
 
