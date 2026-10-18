@@ -29,7 +29,7 @@ The three authoritative baselines everyone is measured against are:
 - **23 data-driven rules** across workload security, RBAC, and networking — each mapped to CIS, PSS, NSA/CISA, and MITRE ATT&CK for Containers.
 - **Cross-resource analysis** — two of those rules only have an answer with the whole set in view: a namespace that runs workloads but ships no NetworkPolicy, and a workload that mounts a ServiceAccount some binding has made admin-equivalent.
 - **Optional live-cluster scanning** (`cluster` extra) — scans running workloads via your current kubeconfig context; exits cleanly with a clear message if no cluster is reachable, and **refuses to print a score** if it could not read the cluster completely (see [Live-cluster scans fail loudly](#live-cluster-scans-fail-loudly)).
-- **`harden` command** — rewrites a manifest to satisfy the restricted Pod Security Standard.
+- **`harden` command** — rewrites a manifest's **pod specs** to satisfy the restricted Pod Security Standard. It does not rewrite RBAC, Services, image tags or probes, so hardened output is not automatically a clean scan — see [What `harden` rewrites](#what-harden-rewrites) for the exact boundary, which CI pins against the rule pack.
 - **Multiple outputs** — rich terminal table (default), `--json`, and valid **SARIF 2.1.0** for GitHub code scanning, with location-independent `partialFingerprints` so reformatting a manifest does not reopen every alert.
 - **Posture score and grade** — a 0–100 score and an A+→F letter grade summarising overall posture.
 - **Configurable failure gate** — `--fail-on {CRITICAL,HIGH,MEDIUM,LOW,INFO}` controls the CI exit code.
@@ -132,6 +132,22 @@ CRITICAL  KS-RBAC-006  Deployment/ci-runner (ns: demo)
 Scanned on their own, the binding is a `KS-RBAC-004` CRITICAL that may well be dead weight, and the mounted token is a `KS-WL-013` MEDIUM that is usually harmless. The pair is a direct path from one container compromise to control of the cluster. Invert either half — bind the SA to a least-privilege Role, or set `automountServiceAccountToken: false` — and `KS-RBAC-006` goes quiet; `examples/hardened/service-account-privilege.yaml` is the same workload wired up both ways.
 
 The same scan also finds three pre-existing paths in the older example manifests, via the `default` ServiceAccount nobody named: `Deployment/web`, `Pod/debug-pod`, and `CronJob/backup` all inherit `demo`'s `default` SA, which `ClusterRoleBinding/dangerous-admin-binding` had already bound to `cluster-admin`. That is the class of mistake this rule exists to catch.
+
+### What `harden` rewrites
+
+A remediator and a detector in the same package should agree, so the two are run against each other in CI. `tests/fixtures/every-rule.yaml` is built to trip all 23 rules; `kube-sentinel harden` is run over it and the output is scanned again. 12 of the 23 rules go quiet, including the `KS-RBAC-006` correlation — the binding is untouched, but the token the workload needed to reach it is gone. The remaining 11 are listed below, and `tests/test_harden_boundary.py` asserts the surviving set is **exactly** that list, so a change that silently stopped setting `runAsNonRoot` fails CI instead of quietly shipping.
+
+What it does rewrite, on every container including init and ephemeral ones: `privileged`, `allowPrivilegeEscalation`, `readOnlyRootFilesystem`, `runAsNonRoot`, `capabilities` (drops ALL, removes any `add`), and the seccomp profile. On the pod: a non-root security context, host namespace sharing removed, `hostPath` volumes replaced with `emptyDir`, `automountServiceAccountToken: false`, and a resources block for containers that have none. Values that are unsafe rather than merely a matter of taste — `runAsUser: 0`, `runAsNonRoot: false`, `seccompProfile: Unconfined` — are overridden at both levels rather than preserved; a deliberate non-zero UID is left alone.
+
+One exception runs the other way. An explicit `automountServiceAccountToken: true` is the only signal in a pod spec that the workload genuinely calls the Kubernetes API, and stripping a token the app needs breaks it — so the field is set when absent and respected when present. For that one input, `KS-WL-013` and the `KS-RBAC-006` correlation behind it survive hardening by design.
+
+#### What `harden` does not touch
+
+- **Nothing outside a pod spec.** Roles, bindings and Services are passed through unchanged, so `KS-RBAC-001`, `KS-RBAC-002`, `KS-RBAC-003`, `KS-RBAC-004`, `KS-RBAC-005`, `KS-NET-001` and `KS-NET-002` still fire. `KS-NET-003` is reported against a Namespace no manifest declares, and `harden` cannot invent a NetworkPolicy for a namespace it was never given.
+- **What restricted PSS does not govern.** It says nothing about image tags (`KS-WL-011`) or probes (`KS-WL-012`), and `harden` cannot know which tag you meant or invent a health endpoint.
+- **A half-specified `resources` block** (`KS-WL-010`). An absent one gets conservative defaults; one that already sets a CPU request and no memory limit is left alone, because the author who wrote it may have meant it.
+
+The practical consequence: `harden` output is a better manifest, not a passing build. On the fixture above it takes 49 findings to 15 — still grade F, because two `cluster-admin` bindings and an `externalIPs` Service are not a pod spec's problem to solve. Run `scan` on the result and read it.
 
 ## Rule catalog
 
@@ -285,6 +301,8 @@ This is a shape check, not a cluster check: it cannot verify that the API server
 client's models say it does, and no test here talks to a real cluster.
 
 It also checks the rule catalog against itself: the rule table and the rule count in this README are compared to the registry, so a new rule nobody documented fails CI instead of quietly drifting the numbers apart.
+
+And it runs `harden` against the rule pack, because the remediator claiming a fix the detector still flags would be this project's own defect class turned inward. A fixture built to trip all 23 rules is hardened and rescanned, and the set of rules that still fire must equal the allowlist under [What `harden` rewrites](#what-harden-rewrites) — exactly, not approximately, so a regression that stopped setting one field cannot hide behind a lower total. One assertion there cannot be made with a scan at all: `KS-WL-003` stops looking once `runAsNonRoot: true` is set, so a pod carrying both that and `runAsUser: 0` scans clean while the kubelet refuses to start it. That one reads the hardened document directly.
 
 ## Roadmap
 
