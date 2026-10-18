@@ -3,6 +3,14 @@
 Given a parsed resource, produce a deep-copied, hardened version that satisfies
 the restricted Pod Security Standard: non-root, no privilege escalation, dropped
 capabilities, read-only root filesystem, and a seccomp profile.
+
+Pod specs are all this rewrites. Resources without one — Roles, bindings,
+Services — are passed through untouched, and nothing here can invent a
+NetworkPolicy for a namespace it was never handed, so hardened output still
+carries RBAC and networking findings. It also leaves what restricted PSS does
+not govern: image tags, probes, and a half-specified resources block.
+``tests/test_harden_boundary.py`` pins that boundary against the rule pack, and
+the README documents it under "What ``harden`` does not touch".
 """
 
 from __future__ import annotations
@@ -17,6 +25,9 @@ from .models import Resource
 
 # A safe, non-zero default UID for the hardened pod-level securityContext.
 DEFAULT_NON_ROOT_UID = 10001
+
+# The only seccomp profile types the restricted profile accepts.
+CONFINED_SECCOMP_TYPES: frozenset[str] = frozenset({"RuntimeDefault", "Localhost"})
 
 HARDENED_POD_SECURITY_CONTEXT: dict[str, Any] = {
     "runAsNonRoot": True,
@@ -36,13 +47,31 @@ HARDENED_CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
 }
 
 
+def _is_confined_seccomp(profile: Any) -> bool:
+    """Whether a seccompProfile is one the restricted profile accepts."""
+    return isinstance(profile, dict) and profile.get("type") in CONFINED_SECCOMP_TYPES
+
+
 def _harden_pod_spec(pod_spec: dict[str, Any]) -> None:
     """Mutate a (copied) pod spec in place to satisfy the restricted profile."""
-    # Pod-level securityContext.
+    # Pod-level securityContext. setdefault is right for the fields where the
+    # manifest's own value is a legitimate choice — a deliberate non-zero UID,
+    # a particular fsGroup — but it must not be allowed to preserve the three
+    # values below. Each is a restricted-PSS violation in its own right, and
+    # leaving one in place while _harden_container forces the container-level
+    # opposite emits a pod that contradicts itself: runAsUser: 0 under
+    # runAsNonRoot: true is rejected by the kubelet at startup, so the output
+    # would be both non-compliant and unschedulable.
     pod_sc = pod_spec.get("securityContext")
     pod_sc = pod_sc if isinstance(pod_sc, dict) else {}
     for key, value in HARDENED_POD_SECURITY_CONTEXT.items():
         pod_sc.setdefault(key, copy.deepcopy(value))
+    if pod_sc.get("runAsNonRoot") is not True:
+        pod_sc["runAsNonRoot"] = True
+    if pod_sc.get("runAsUser") == 0:
+        pod_sc["runAsUser"] = DEFAULT_NON_ROOT_UID
+    if not _is_confined_seccomp(pod_sc.get("seccompProfile")):
+        pod_sc["seccompProfile"] = {"type": "RuntimeDefault"}
     pod_spec["securityContext"] = pod_sc
 
     # Remove host namespace sharing.
@@ -79,6 +108,12 @@ def _harden_container(container: dict[str, Any]) -> None:
     sc["readOnlyRootFilesystem"] = True
     sc["runAsNonRoot"] = True
 
+    # An explicit runAsUser: 0 is forbidden by the restricted profile, and the
+    # runAsNonRoot: true just set above would make the kubelet refuse to start
+    # the container. A non-zero UID the manifest chose is left alone.
+    if sc.get("runAsUser") == 0:
+        sc["runAsUser"] = DEFAULT_NON_ROOT_UID
+
     caps = sc.get("capabilities")
     caps = caps if isinstance(caps, dict) else {}
     caps["drop"] = ["ALL"]
@@ -86,8 +121,7 @@ def _harden_container(container: dict[str, Any]) -> None:
     sc["capabilities"] = caps
 
     # Force a confined seccomp profile, overriding Unconfined if present.
-    profile = sc.get("seccompProfile")
-    if not isinstance(profile, dict) or profile.get("type") in (None, "Unconfined"):
+    if not _is_confined_seccomp(sc.get("seccompProfile")):
         sc["seccompProfile"] = {"type": "RuntimeDefault"}
     container["securityContext"] = sc
 

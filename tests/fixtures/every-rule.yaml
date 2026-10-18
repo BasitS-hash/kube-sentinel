@@ -1,0 +1,162 @@
+# A manifest set built to trip EVERY rule in the registry, so the harden audit
+# in tests/test_harden_boundary.py is not limited to whatever the shipped
+# examples happen to contain. tests/test_harden_boundary.py asserts that all 23
+# rules fire here, so a new rule this fixture does not cover fails CI rather
+# than quietly narrowing the audit.
+#
+# Not an example and not a demo: nothing in examples/ depends on it, and it is
+# never published to code scanning. DO NOT deploy.
+---
+# KS-NET-001: NodePort exposes a port on every node.
+apiVersion: v1
+kind: Service
+metadata:
+  name: np
+  namespace: demo
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+---
+# KS-NET-002: externalIPs bypasses ingress controls.
+apiVersion: v1
+kind: Service
+metadata:
+  name: eip
+  namespace: demo
+spec:
+  externalIPs:
+    - 203.0.113.10
+  ports:
+    - port: 80
+---
+# KS-RBAC-001 (wildcards) and KS-RBAC-002 (secrets via the resource wildcard).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wild
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+# KS-RBAC-002 (named secrets) and KS-RBAC-003 (pods/exec).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: exec-and-secrets
+  namespace: demo
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-sa
+  namespace: demo
+---
+# KS-RBAC-004, and half of KS-RBAC-006: the Deployment below mounts this SA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: admin-sa
+    namespace: demo
+---
+# KS-RBAC-005: an unauthenticated principal.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: anon-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: User
+    name: system:anonymous
+    apiGroup: rbac.authorization.k8s.io
+---
+# KS-WL-001..009, 011..014 and KS-RBAC-006. The pod leaves
+# automountServiceAccountToken unset, which is how KS-WL-013 fires on a pod
+# nobody wired to the API on purpose — and what makes the admin SA reachable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kitchen-sink
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kitchen-sink
+  template:
+    metadata:
+      labels:
+        app: kitchen-sink
+    spec:
+      serviceAccountName: admin-sa
+      hostNetwork: true
+      hostPID: true
+      hostIPC: true
+      initContainers:
+        - name: init
+          image: busybox
+      containers:
+        - name: bad
+          image: nginx:latest
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            runAsUser: 0
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - NET_ADMIN
+            seccompProfile:
+              type: Unconfined
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+        # KS-WL-007: no securityContext at all.
+        - name: no-sc
+          image: alpine:3.20
+      volumes:
+        # KS-WL-009.
+        - name: host-root
+          hostPath:
+            path: /
+---
+# KS-WL-010 with a HALF-specified resources block, which harden deliberately
+# will not complete, and KS-WL-011 via an untagged image. A CronJob also
+# exercises the deeper jobTemplate pod-spec path.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+  namespace: demo
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          automountServiceAccountToken: false
+          containers:
+            - name: backup
+              image: my-registry.example.com/backup
+              resources:
+                requests:
+                  cpu: 50m
+# KS-NET-003: namespace 'demo' runs workloads and ships no NetworkPolicy.
